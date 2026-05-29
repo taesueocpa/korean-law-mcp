@@ -1,8 +1,15 @@
 import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
+import { cleanHtml } from "../lib/article-parser.js"
 import { parsePrecedentXML } from "../lib/xml-parser.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError } from "../lib/errors.js"
+import { fetchWithRetry } from "../lib/fetch-with-retry.js"
+import {
+  type ExternalHttpsProxyConfig,
+  getExternalHttpsProxyConfig,
+  requestExternalHttps,
+} from "../lib/external-https-proxy.js"
 import {
   compactBody,
   densifyLawRefs,
@@ -125,51 +132,28 @@ export const getPrecedentTextSchema = z.object({
 
 export type GetPrecedentTextInput = z.infer<typeof getPrecedentTextSchema>;
 
-export async function getPrecedentText(
-  apiClient: LawApiClient,
-  args: GetPrecedentTextInput
-): Promise<{ content: Array<{ type: string, text: string }>, isError?: boolean }> {
-  try {
-    const extraParams: Record<string, string> = { ID: args.id };
-    if (args.caseName) extraParams.LM = args.caseName;
+interface PrecedentBasic {
+  판례명?: string
+  사건번호?: string
+  법원명?: string
+  선고일자?: string
+  사건종류명?: string
+  판결유형?: string
+}
 
-    const responseText = await apiClient.fetchApi({
-      endpoint: "lawService.do",
-      target: "prec",
-      type: "JSON",
-      extraParams,
-      apiKey: args.apiKey,
-    });
+interface PrecedentContent {
+  판시사항?: string
+  판결요지?: string
+  참조조문?: string
+  참조판례?: string
+  전문?: string
+}
 
-  let data: any;
-  try {
-    data = JSON.parse(responseText);
-  } catch (err) {
-    throw new Error("Failed to parse JSON response from API");
-  }
-
-  if (!data.PrecService) {
-    throw new Error("Precedent not found or invalid response format");
-  }
-
-  const prec = data.PrecService;
-  // API returns fields directly in PrecService, not nested
-  const basic = {
-    판례명: prec.사건명,
-    사건번호: prec.사건번호,
-    법원명: prec.법원명,
-    선고일자: prec.선고일자,
-    사건종류명: prec.사건종류명,
-    판결유형: prec.판결유형
-  };
-  const content = {
-    판시사항: prec.판시사항,
-    판결요지: prec.판결요지,
-    참조조문: prec.참조조문,
-    참조판례: prec.참조판례,
-    전문: prec.판례내용
-  };
-
+function formatPrecedentText(
+  basic: PrecedentBasic,
+  content: PrecedentContent,
+  full?: boolean
+): string {
   let output = `=== ${basic.판례명 || "판례"} ===\n\n`;
 
   output += `기본 정보:\n`;
@@ -197,9 +181,321 @@ export async function getPrecedentText(
 
   if (content.전문) {
     const deduped = stripRepeatedSummary(content.전문, [content.판시사항, content.판결요지]);
-    const compacted = compactBody(deduped, { full: args.full });
+    const compacted = compactBody(deduped, { full });
     output += `전문:\n${compacted}\n`;
   }
+
+  return output;
+}
+
+function normalizeHtmlText(html: string): string {
+  const withBlockBreaks = html
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\/\s*(p|div|tr|table|tbody|thead|tfoot|ul|ol|li|h[1-6])\s*>/gi, "\n")
+    .replace(/<\s*(p|div|tr|table|tbody|thead|tfoot|ul|ol|li|h[1-6])\b[^>]*>/gi, "\n")
+    .replace(/<\/\s*td\s*>/gi, "\t")
+    .replace(/<\s*td\b[^>]*>/gi, "")
+
+  return cleanHtml(withBlockBreaks)
+    .replace(/\r/g, "")
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+}
+
+function hasSubstantiveTaxlawBody(text: string): boolean {
+  const compact = text.replace(/\s+/g, "")
+  if (compact.length < 20) return false
+  return !/(내용없음|본문없음|조회된내용이없습니다|자료가없습니다)/.test(compact)
+}
+
+function normalizeTaxlawBodyCandidate(value: unknown): string {
+  if (typeof value !== "string") return ""
+  const body = normalizeHtmlText(value)
+  return hasSubstantiveTaxlawBody(body) ? body : ""
+}
+
+function extractTaxlawEditorBody(actionData: any): string {
+  const editorList = Array.isArray(actionData.dcmHwpEditorDVOList)
+    ? actionData.dcmHwpEditorDVOList
+    : []
+
+  for (const item of editorList) {
+    const value = typeof item?.dcmFleByte === "string" ? item.dcmFleByte : ""
+    if (!value.includes("<html") && !value.includes("<body") && value.length <= 100) continue
+    const body = normalizeTaxlawBodyCandidate(value)
+    if (body) return body
+  }
+
+  return ""
+}
+
+function extractTaxlawBody(actionData: any, dcm: any): string {
+  return extractTaxlawEditorBody(actionData) || normalizeTaxlawBodyCandidate(dcm?.ntstDcmCntn)
+}
+
+function extractIframeSrc(html: string): string {
+  return html.match(/<iframe\b[^>]*\bsrc\s*=\s*["']?\s*([^"'>\s]+)\s*["']?/i)?.[1] || ""
+}
+
+function extractHiddenPrecSeq(html: string): string {
+  return html.match(/id\s*=\s*["']precSeq["'][^>]*value\s*=\s*["']?\s*(\d+)/i)?.[1] || ""
+}
+
+function normalizeUrl(url: string, base = "https://www.law.go.kr"): string {
+  return new URL(url, base).toString()
+}
+
+function iframeMatchesPrecedentId(iframeUrl: string, id: string): boolean {
+  try {
+    return new URL(iframeUrl).searchParams.get("precSeq") === id
+  } catch {
+    return false
+  }
+}
+
+function isMissingPrecedentJson(data: unknown): boolean {
+  if (!data || typeof data !== "object") return true
+  const obj = data as Record<string, unknown>
+  return !obj.PrecService
+}
+
+async function fetchText(response: Response, context: string): Promise<string> {
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(`${context} failed with HTTP ${response.status}`)
+  }
+  return text
+}
+
+async function fetchTaxlawAction(ntstDcmId: string, referer: string): Promise<any> {
+  const body = new URLSearchParams({
+    actionId: "ASIQTB002PR01",
+    paramData: JSON.stringify({ dcmDVO: { ntstDcmId } }),
+  })
+  const headers = {
+    "content-type": "application/x-www-form-urlencoded",
+    "origin": "https://taxlaw.nts.go.kr",
+    "referer": referer,
+    "x-requested-with": "XMLHttpRequest",
+  }
+
+  const proxyConfig = getExternalHttpsProxyConfig()
+  if (proxyConfig) {
+    const response = await requestExternalHttps("https://taxlaw.nts.go.kr/action.do", {
+      method: "POST",
+      headers,
+      body: body.toString(),
+    }, proxyConfig)
+    if (!response.ok) {
+      throw new Error(`taxlaw action.do failed with HTTP ${response.status}`)
+    }
+    return JSON.parse(response.text)
+  }
+
+  const response = await fetchWithRetry("https://taxlaw.nts.go.kr/action.do", {
+    method: "POST",
+    headers,
+    body: body.toString(),
+  })
+
+  const text = await fetchText(response, "taxlaw action.do")
+  return JSON.parse(text)
+}
+
+function getResponseHeader(
+  headers: Record<string, string | string[] | undefined>,
+  name: string
+): string | null {
+  const value = headers[name.toLowerCase()] ?? headers[name]
+  if (Array.isArray(value)) return value[0] || null
+  return value || null
+}
+
+async function fetchManualRedirect(
+  url: string,
+  proxyConfig: ExternalHttpsProxyConfig | null
+): Promise<{ status: number; location: string | null }> {
+  if (proxyConfig && new URL(url).protocol === "https:") {
+    const response = await requestExternalHttps(url, {
+      method: "GET",
+      headers: {
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+    }, proxyConfig)
+    return {
+      status: response.status,
+      location: getResponseHeader(response.headers, "location"),
+    }
+  }
+
+  const response = await fetchWithRetry(url, { redirect: "manual" })
+  return {
+    status: response.status,
+    location: response.headers.get("location"),
+  }
+}
+
+async function resolveTaxlawDetailUrl(iframeUrl: string): Promise<string> {
+  let currentUrl = iframeUrl
+  const proxyConfig = getExternalHttpsProxyConfig()
+  for (let redirectCount = 0; redirectCount < 3; redirectCount++) {
+    const iframeResponse = await fetchManualRedirect(currentUrl, proxyConfig)
+    const location = iframeResponse.location
+    if (!location) {
+      throw new Error(`precedent iframe did not include taxlaw redirect location (HTTP ${iframeResponse.status})`)
+    }
+
+    const nextUrl = normalizeUrl(location, currentUrl)
+    const parsedNextUrl = new URL(nextUrl)
+    if (parsedNextUrl.searchParams.get("ntstDcmId")) {
+      return nextUrl
+    }
+    if (parsedNextUrl.hostname === "taxlaw.nts.go.kr") {
+      throw new Error("HTML fallback response did not expose ntstDcmId")
+    }
+    currentUrl = nextUrl
+  }
+
+  throw new Error("HTML fallback response did not expose ntstDcmId")
+}
+
+async function fetchHtmlFallbackPrecedent(
+  apiClient: LawApiClient,
+  args: GetPrecedentTextInput,
+  extraParams: Record<string, string>
+): Promise<{ basic: PrecedentBasic; content: PrecedentContent }> {
+  const html = await apiClient.fetchApi({
+    endpoint: "lawService.do",
+    target: "prec",
+    type: "HTML",
+    extraParams,
+    apiKey: args.apiKey,
+  })
+
+  const hiddenPrecSeq = extractHiddenPrecSeq(html)
+  const iframeSrc = extractIframeSrc(html)
+  const iframeUrl = iframeSrc ? normalizeUrl(iframeSrc) : ""
+  if (hiddenPrecSeq !== args.id && !iframeMatchesPrecedentId(iframeUrl, args.id)) {
+    throw new Error("Precedent not found or invalid response format")
+  }
+  if (!iframeUrl) {
+    throw new Error("HTML fallback response did not include a precedent iframe URL")
+  }
+
+  const taxlawDetailUrl = await resolveTaxlawDetailUrl(iframeUrl)
+  const ntstDcmId = new URL(taxlawDetailUrl).searchParams.get("ntstDcmId")
+  if (!ntstDcmId) {
+    throw new Error("HTML fallback response did not expose ntstDcmId")
+  }
+
+  const actionJson = await fetchTaxlawAction(ntstDcmId, taxlawDetailUrl)
+  const actionData = actionJson?.data?.ASIQTB002PR01
+  const dcm = actionData?.dcmDVO
+  if (!dcm) {
+    throw new Error("HTML fallback taxlaw response did not include dcmDVO")
+  }
+
+  const body = extractTaxlawBody(actionData, dcm)
+  if (!body) {
+    throw new Error("HTML fallback taxlaw response did not include precedent body")
+  }
+
+  return {
+    basic: {
+      판례명: dcm.ntstDcmTtl,
+      사건번호: dcm.ntstDcmDscmCntn || dcm.ntstPrdgHpnnNoCntn,
+      법원명: dcm.ogzNm,
+      선고일자: dcm.ntstDcmRgtDt,
+      사건종류명: "국세법령정보시스템 판례",
+      판결유형: dcm.ntstDcmClNm,
+    },
+    content: {
+      판결요지: dcm.ntstDcmGistCntn,
+      전문: body,
+    },
+  }
+}
+
+export async function getPrecedentText(
+  apiClient: LawApiClient,
+  args: GetPrecedentTextInput
+): Promise<{ content: Array<{ type: string, text: string }>, isError?: boolean }> {
+  try {
+    const extraParams: Record<string, string> = { ID: args.id };
+    if (args.caseName) extraParams.LM = args.caseName;
+
+    let responseText: string;
+    try {
+      responseText = await apiClient.fetchApi({
+        endpoint: "lawService.do",
+        target: "prec",
+        type: "JSON",
+        extraParams,
+        apiKey: args.apiKey,
+      });
+    } catch (err) {
+      const fallback = await fetchHtmlFallbackPrecedent(apiClient, args, extraParams)
+      const output = formatPrecedentText(fallback.basic, fallback.content, args.full)
+      return {
+        content: [{
+          type: "text",
+          text: truncateResponse(output)
+        }]
+      };
+    }
+
+  let data: any;
+  try {
+    data = JSON.parse(responseText);
+  } catch (err) {
+    const fallback = await fetchHtmlFallbackPrecedent(apiClient, args, extraParams)
+    const output = formatPrecedentText(fallback.basic, fallback.content, args.full)
+    return {
+      content: [{
+        type: "text",
+        text: truncateResponse(output)
+      }]
+    };
+  }
+
+  if (isMissingPrecedentJson(data)) {
+    const fallback = await fetchHtmlFallbackPrecedent(apiClient, args, extraParams)
+    const output = formatPrecedentText(fallback.basic, fallback.content, args.full)
+    return {
+      content: [{
+        type: "text",
+        text: truncateResponse(output)
+      }]
+    };
+  }
+
+  if (!data.PrecService) {
+    throw new Error("Precedent not found or invalid response format");
+  }
+
+  const prec = data.PrecService;
+  // API returns fields directly in PrecService, not nested
+  const basic = {
+    판례명: prec.사건명,
+    사건번호: prec.사건번호,
+    법원명: prec.법원명,
+    선고일자: prec.선고일자,
+    사건종류명: prec.사건종류명,
+    판결유형: prec.판결유형
+  };
+  const content = {
+    판시사항: prec.판시사항,
+    판결요지: prec.판결요지,
+    참조조문: prec.참조조문,
+    참조판례: prec.참조판례,
+    전문: prec.판례내용
+  };
+
+  const output = formatPrecedentText(basic, content, args.full)
 
   return {
     content: [{
