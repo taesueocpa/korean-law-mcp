@@ -165,6 +165,31 @@ async function run() {
     const dText = textOf(d);
     console.log(dText.slice(0, 200) + '\n');
     check('D: [NOT_FOUND] + isError', isErr(d) && dText.includes('[NOT_FOUND]'), `isError=${isErr(d)}`);
+
+    // ── E. ID만으로 (lawName="admrul:<id>") → getAdminRule 명칭해석 경로 강제 ──
+    // lawName에 한글이 없으므로 ID→행정규칙명 해석(getAdminRule) 경로를 반드시 탄다.
+    console.log('── E. lawName=admrul:<id> (명칭해석 경로) 별표 6 ──');
+    const e = await callTool('get_annexes', { lawName: `admrul:${ADMIN_RULE_SEQ}`, annexNo: '6' });
+    const eText = textOf(e);
+    console.log(eText.slice(0, 200) + '\n');
+    check('E: ID 명칭해석 경로로 별표 6 회수', !isErr(e) && eText.includes(ANNEX6_KEYWORD), `isError=${isErr(e)}`);
+
+    // ── F. 별지 6 선택 (동일번호 별표/별지 충돌 시 별지 명시 선택) ──
+    // 별표 6(내부회계관리제도)와 별지 6(투명성보고서)이 같은 번호(000600)로 병존 → '별지6' 힌트로 별지 회수.
+    console.log('── F. 별지 6 (투명성보고서) 명시 선택 ──');
+    const f = await callTool('get_annexes', { lawName: `${ADMIN_RULE_NAME} 별지6`, adminRuleId: ADMIN_RULE_SEQ });
+    const fText = textOf(f);
+    console.log(fText.slice(0, 200) + '\n');
+    check('F: 별지 6 회수 (투명성보고서, 별표6과 구분)', !isErr(f) && fText.includes('투명성보고서'), `isError=${isErr(f)}`);
+
+    // ── G. '세칙' 감지 단독 검증 (이름에 '규정' 없음, adminRuleId 없음) ──
+    // '은행업감독업무시행세칙'은 '규정'을 포함하지 않아 tier-4(/규정/) 폴백이 못 잡는다.
+    // detectLawType의 '세칙'→admin 분기가 살아있어야만 admbyl로 목록이 회수된다(회귀 가드).
+    console.log("── G. 세칙 감지 (은행업감독업무시행세칙 목록) ──");
+    const g = await callTool('get_annexes', { lawName: '은행업감독업무시행세칙' });
+    const gText = textOf(g);
+    console.log(gText.slice(0, 200) + '\n');
+    check('G: 세칙명만으로 admbyl 목록 회수', !isErr(g) && !gText.includes('[NOT_FOUND]') && /별표|서식/.test(gText), `isError=${isErr(g)}`);
   } catch (e) {
     console.error('\n❌ 예외:', e.message);
     failed++;

@@ -464,12 +464,12 @@ function extractParentLawName(lawName: string): string | null {
   return cleaned !== lawName ? cleaned : null
 }
 
-/** 별표 종류 힌트 (별표 vs 서식) — 동일 번호 충돌 시 선택 우선순위에 사용 */
-type AnnexKind = "별표" | "서식"
+/** 별표 종류 힌트 (별표/별지/서식) — 동일 번호 충돌 시 선택 우선순위에 사용 */
+type AnnexKind = "별표" | "별지" | "서식"
 
 function parseLawNameAndHint(lawName: string): { normalizedLawName: string, annexNo?: string, annexType?: AnnexKind } {
   const trimmedLawName = lawName.trim()
-  const annexHintMatch = trimmedLawName.match(/\[?\s*(별표|서식)\s*(?:제)?\s*(\d{1,6})\s*(?:호)?\s*\]?/)
+  const annexHintMatch = trimmedLawName.match(/\[?\s*(별표|별지|서식)\s*(?:제)?\s*(\d{1,6})\s*(?:호)?\s*\]?/)
 
   if (!annexHintMatch) {
     return { normalizedLawName: trimmedLawName }
@@ -517,7 +517,8 @@ function findMatchingAnnex(annexList: AnnexItem[], annexSelector: string, prefer
 
   if (matches.length <= 1) return matches[0]
 
-  // 종류 우선순위: 요청 종류 일치 > 별표 > 서식 > 그 외(별지 등). 동순위는 원래 순서 유지.
+  // 종류 우선순위: 요청 종류 일치(별표/별지/서식) > 별표 > 서식 > 별지. 동순위는 원래 순서 유지.
+  // 힌트가 없으면 별표를 우선하되, 'lawName ... 별지N'으로 명시하면 별지도 선택 가능.
   const rank = (kind?: string): number => {
     const s = String(kind || "")
     if (preferredType && s.startsWith(preferredType)) return 0
@@ -588,6 +589,8 @@ function titleMatchesAnnexNumber(title: string, annexNumber: string): boolean {
   const patterns = [
     new RegExp(`\\[\\s*별표\\s*${escapedNumber}\\s*\\]`),
     new RegExp(`별표\\s*제?\\s*${escapedNumber}\\s*(?:호)?`),
+    new RegExp(`\\[\\s*별지\\s*${escapedNumber}\\s*\\]`),
+    new RegExp(`별지\\s*제?\\s*${escapedNumber}\\s*(?:호)?`),
     new RegExp(`\\[\\s*서식\\s*${escapedNumber}\\s*\\]`),
     new RegExp(`서식\\s*제?\\s*${escapedNumber}\\s*(?:호)?`)
   ]
