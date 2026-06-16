@@ -85,7 +85,7 @@
 | `parse_jo_code` | - | 조문번호 ↔ 코드 변환 |
 | `get_law_history` | - | 특정일 법령 변경 목록 |
 | `advanced_search` | - | 기간/AND/OR 검색 |
-| `get_annexes` | - | 별표/서식 조회 + HWPX/HWP 본문 추출 |
+| `get_annexes` | `licbyl`/`ordinbyl`/`admbyl` | 별표/서식 조회 + HWPX/HWP 본문 추출 (법령·자치법규·**행정규칙**) |
 
 ### 조회 (9개)
 
@@ -258,6 +258,25 @@
 2. get_annexes(lawName="여권법 시행령", bylSeq="000000")
    → HWP 파일 다운로드 → 표 Markdown 변환
 ```
+
+**행정규칙 별표 (target=admbyl)** — 법령 별표와 동일한 도구로 회수. 입력에 행정규칙 ID가 인식되면 admbyl 경로로 분기한다.
+
+| 파라미터 | 설명 |
+|------|------|
+| `lawName` | 법령명 또는 행정규칙명. `admrul:<숫자>` / 순수 숫자 ID를 넣으면 행정규칙으로 자동 인식 |
+| `adminRuleId` | 행정규칙일련번호 또는 행정규칙ID (`admrul:` 프리픽스 허용). 지정 시 admbyl 경로 강제 |
+| `bylSeq` / `annexNo` | 특정 별표 지정 (예: `6`, `별표6`) → 파일 다운로드 + 본문 추출 |
+
+```
+# 이름만으로 (행정규칙 자동 인식)
+get_annexes(lawName="외부감사 및 회계 등에 관한 규정 시행세칙 별표6")
+   → 별표 6 「내부회계관리제도 평가 및 보고 기준」 파일 → Markdown 변환
+
+# 행정규칙 ID로
+get_annexes(lawName="외부감사 및 회계 등에 관한 규정 시행세칙", adminRuleId="admrul:2200000108723", annexNo="6")
+```
+
+> 법제처는 별표 내용을 인라인이 아닌 **별표서식파일링크**(예: `flDownload.do?flSeq=...`)로 제공하므로, 도구가 파일을 내려받아 kordoc으로 변환한다. 이미지 기반 PDF 등 변환 불가 시 다운로드 링크를 안내한다.
 
 ### 통합 리서치 (legal_research)
 
