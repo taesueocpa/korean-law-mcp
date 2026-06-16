@@ -271,6 +271,38 @@ export class LawApiClient {
   }
 
   /**
+   * 행정규칙 별표/서식 목록 조회 (target=admbyl)
+   *
+   * 법령 별표(getAnnexes, target=licbyl)와 분리된 경로.
+   * 행정규칙명(query) + search 범위로 조회하며, 응답 항목에 별표서식파일링크가 포함된다.
+   * - search=1: 별표서식명 / search=2: 해당 행정규칙(법령) 검색 / search=3: 별표 본문 검색
+   * @see http://www.law.go.kr/DRF/lawSearch.do?target=admbyl
+   */
+  async getAdminRuleAnnexes(params: {
+    query: string
+    search?: "1" | "2" | "3"
+    knd?: "1" | "2" | "3"
+    apiKey?: string
+  }): Promise<string> {
+    const apiParams = new URLSearchParams({
+      target: "admbyl",
+      OC: this.getApiKey(params.apiKey),
+      type: "JSON",
+      query: params.query,
+      search: params.search || "2", // 2=해당 행정규칙으로 검색
+      display: "100", // 최대 100개
+    })
+
+    if (params.knd) apiParams.set("knd", params.knd)
+
+    const url = `${LAW_API_BASE}/lawSearch.do?${apiParams.toString()}`
+    const response = await fetchWithRetry(url)
+    await this.throwIfError(response, "getAdminRuleAnnexes")
+
+    return await response.text()
+  }
+
+  /**
    * 법령 종류 판별
    */
   private detectLawType(lawName: string): 'law' | 'ordinance' | 'admin' {
@@ -285,8 +317,9 @@ export class LawApiClient {
       return 'law'
     }
 
-    // 행정규칙: 훈령, 예규, 고시, 지침, 내규
-    if (/훈령|예규|고시|지침|내규/.test(lawName)) {
+    // 행정규칙: 훈령, 예규, 고시, 지침, 내규, 세칙
+    // ("세칙"은 행정규칙 전용 명칭 — 금융감독원 시행세칙 등. 법령 DB에는 "세칙"명 법령이 없어 오분류 위험 없음)
+    if (/훈령|예규|고시|지침|내규|세칙/.test(lawName)) {
       return 'admin'
     }
 
