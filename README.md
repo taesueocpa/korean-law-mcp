@@ -751,6 +751,10 @@ reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /
 
 "산업안전보건법 별표1 내용 알려줘"
 → get_annexes(lawName="산업안전보건법 별표1") → HWPX 파일 다운로드 → 표/텍스트 Markdown 변환
+
+"외부감사 및 회계 등에 관한 규정 시행세칙 별표6 (내부회계관리제도 평가 및 보고 기준)"
+→ get_annexes(lawName="외부감사 및 회계 등에 관한 규정 시행세칙 별표6") → 행정규칙(admbyl) 경로 자동 인식 → 별표서식파일 다운로드 → Markdown 변환
+   (행정규칙일련번호/ID가 있으면 get_annexes(lawName="...", adminRuleId="admrul:2200000108723", annexNo="6") 로도 회수)
 ```
 
 
@@ -766,7 +770,7 @@ v4.4.0은 9개 도구만 노출합니다 (컨텍스트 52% 감축). 기존 `chai
 | **정밀분석** (1) | `legal_analysis` | 검증·분석 — `mode` 4종 선택 (아래 표) |
 | **법령** (3) | `search_law` | 법령 검색 → lawId, MST 획득 |
 | | `get_law_text` | 조문 전문 조회 |
-| | `get_annexes` | 별표/서식 조회 (금액표·요율표·별지서식) |
+| | `get_annexes` | 별표/서식 조회 (금액표·요율표·별지서식). 법령 + **행정규칙(시행세칙 등)** 별표 모두 지원 |
 | **통합** (2) | `search_decisions` | **17개 도메인** 통합 검색 (판례·헌재·조세심판·공정위·노동위·관세·해석례·행심·개인정보위·권익위·소청심사·학칙·공사공단·공공기관·조약·영문법령) |
 | | `get_decision_text` | **17개 도메인** 전문 조회 |
 | **메타** (2) | `discover_tools` | 전문 도구 검색 (용어·별표·이력·비교 등) |
@@ -803,7 +807,7 @@ v4.4.0은 9개 도구만 노출합니다 (컨텍스트 52% 감축). 기존 `chai
 - **42개 API → 9개 도구** — 법령, 판례, 행정규칙, 자치법규, 헌재결정, 조세심판, 관세해석, 국세청 해석례, 조약, 학칙/공단/공공기관 규정, 법령용어
 - **MCP + CLI** — Claude Desktop에서도, 터미널에서도 같은 도구 사용
 - **법률 도메인 특화** — 약칭 자동 인식(`화관법` → `화학물질관리법`), 조문번호 변환(`제38조` ↔ `003800`), 3단 위임 구조 시각화
-- **별표/별지서식 본문 추출** — HWPX·HWP·PDF·XLSX·DOCX 자동 변환 ([kordoc](https://github.com/chrisryugj/kordoc) 엔진)
+- **별표/별지서식 본문 추출** — 법령·**행정규칙(`target=admbyl`)** 별표 모두 HWPX·HWP·PDF·XLSX·DOCX 자동 변환 ([kordoc](https://github.com/chrisryugj/kordoc) 엔진). 행정규칙은 `adminRuleId`(또는 `admrul:` 프리픽스/이름)로 조회
 - **8개 체인 + 7개 시나리오** — 기본 체인에 상황별 확장 분석 자동 추가 (과태료 감경, 관세 통관, 위임입법 감시 등)
 - **17개 도메인 통합 검색** — `search_decisions` 하나로 판례·헌재·조세심판·공정위·노동위 등 즉시 접근
 - **캐시** — 검색 1시간, 조문 24시간 TTL

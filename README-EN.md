@@ -311,6 +311,10 @@ User: "근로기준법 제74조 해석례"
 
 User: "산업안전보건법 별표1 내용"
 → get_annexes("산업안전보건법 별표1") → HWPX download → Markdown table
+
+User: "외부감사 및 회계 등에 관한 규정 시행세칙 별표6"  (an administrative rule)
+→ get_annexes(lawName="...시행세칙 별표6") → admin-rule (admbyl) path auto-detected → annex file download → Markdown
+   (or pass adminRuleId="admrul:2200000108723", annexNo="6")
 ```
 
 ---
@@ -321,7 +325,7 @@ User: "산업안전보건법 별표1 내용"
 - **MCP + CLI** — Use from Claude Desktop or from your terminal
 - **17 Decision Domains** — `search_decisions` covers precedents, constitutional court, tax tribunal, FTC, NLRC, customs, and 11 more domains in one tool
 - **Korean Law Intelligence** — Auto-resolves abbreviations (`화관법` → `화학물질관리법`), converts article numbers (`제38조` ↔ `003800`), visualizes 3-tier delegation
-- **Annex Extraction** — Downloads HWPX/HWP/PDF/XLSX/DOCX annexes and converts to Markdown ([kordoc](https://github.com/chrisryugj/kordoc) v2.2.5 engine)
+- **Annex Extraction** — Downloads HWPX/HWP/PDF/XLSX/DOCX annexes and converts to Markdown ([kordoc](https://github.com/chrisryugj/kordoc) engine). Supports both statute annexes and **administrative-rule annexes (`target=admbyl`)** via `adminRuleId` / `admrul:` prefix / rule name
 - **8 Chain Tools** — Composite research workflows in a single call (e.g. `chain_full_research`: AI search → statutes → precedents → interpretations)
 - **Caching** — 1-hour search cache, 24-hour article cache
 - **Remote Endpoint** — Use without installation via `https://korean-law-mcp.fly.dev/mcp`

@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.5.0] - 2026-06-16
+
+### Added — 행정규칙 별표/서식 회수 지원 (`target=admbyl`)
+
+`get_annexes`가 법령 별표만 지원하고 행정규칙(금융감독원 시행세칙 등) 별표는 회수하지 못하던 문제 해결. 행정규칙 ID 또는 행정규칙명으로도 별표 목록·파일 본문(Markdown)을 회수한다.
+
+- **`getAdminRuleAnnexes` 신설** (`api-client.ts`): `lawSearch.do?target=admbyl` 연동. `search`(1=별표서식명/2=해당규칙/3=본문), `display=100` 지원. 법령 별표 경로(`target=licbyl`)와 분리되어 회귀 0.
+- **`adminRuleId` 입력 추가** (`get_annexes` 스키마): 행정규칙일련번호 또는 행정규칙ID, `admrul:` 프리픽스 허용. `lawName`에 `admrul:<숫자>`/순수 숫자 ID가 들어와도 자동 인식해 admbyl 경로로 분기.
+- **별표서식파일링크 → kordoc 연결**: admbyl 응답의 `별표서식파일링크`를 기존 다운로드+변환 파이프라인(`extractAnnexContent`/`parseAnnexFile`)에 그대로 태워 표/텍스트를 Markdown으로 변환. 특정 별표 번호(`annexNo`/`bylSeq`) 필터·묶음 별표 섹션 추출 재사용.
+- **ID 매칭 견고화**: admbyl 항목을 `관련행정규칙일련번호`·`관련행정규칙ID`·`관련법령ID` 후보 필드로 매칭(선행 0 패딩 차이 허용), 매칭 0건 시 행정규칙명 기반 narrowing으로 폴백. ID만 주어지면 `getAdminRule`로 행정규칙명을 해석해 admbyl 조회.
+- **이름 경로 개선**: `detectLawType`에 `세칙`을 행정규칙 신호로 추가(`시행세칙` 등). 법령 DB에 `세칙`명 법령이 없어 오분류 위험 없음.
+- **에러 규약 일관성**: 행정규칙 별표 미존재와 파일 변환 실패를 구분해 `[NOT_FOUND]`/`isError` 표준 응답 반환 (v3.5.4 규약).
+- **테스트 신설**: `test/test-admin-rule-annex.cjs` — 「외부감사 및 회계 등에 관한 규정 시행세칙」별표 6 「내부회계관리제도 평가 및 보고 기준」 ID/이름 회수, 법령 별표 회귀, `[NOT_FOUND]` 케이스 (라이브 API, `LAW_OC` 필요·없으면 SKIP).
+
 ## [4.4.1] - 2026-06-11
 
 ### Fixed — 광고 스키마 required 버그 + 통합 진입점 보강 (시니어 리뷰 반영)
