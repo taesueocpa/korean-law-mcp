@@ -158,9 +158,10 @@ async function run() {
     console.log(cText.slice(0, 300) + '\n');
     check('C: 법령 별표 목록 정상 (회귀)', !isErr(c) && /별표|서식/.test(cText), `isError=${isErr(c)}`);
 
-    // ── D. 존재하지 않는 별표 → [NOT_FOUND] ──
-    console.log('── D. 없는 행정규칙 ID → [NOT_FOUND] ──');
-    const d = await callTool('get_annexes', { adminRuleId: '9999999999999', annexNo: '1' });
+    // ── D. 존재하지 않는 별표 번호 → [NOT_FOUND] ──
+    // (행정규칙은 찾았으나 요청한 별표 번호가 없는 경우 = 파일 변환 실패와 구분되는 "데이터 없음")
+    console.log('── D. 존재하지 않는 별표 번호 → [NOT_FOUND] ──');
+    const d = await callTool('get_annexes', { lawName: ADMIN_RULE_NAME, adminRuleId: ADMIN_RULE_SEQ, annexNo: '999' });
     const dText = textOf(d);
     console.log(dText.slice(0, 200) + '\n');
     check('D: [NOT_FOUND] + isError', isErr(d) && dText.includes('[NOT_FOUND]'), `isError=${isErr(d)}`);

@@ -51,13 +51,15 @@ function toArray(v: unknown): AnnexItem[] {
   return v == null ? [] : Array.isArray(v) ? v : [v]
 }
 
-/** 별표/서식 검색 응답(JSON) 파싱 — 법령(licbyl)·자치법규(ordinbyl)·행정규칙(admbyl) 공용 */
+/** 별표/서식 검색 응답(JSON) 파싱 — 법령(licbyl)·자치법규(ordinbyl)·행정규칙(admrulbyl) 공용 */
 function parseAnnexResponse(jsonText: string): { list: AnnexItem[], type: string } {
   try {
     const json = JSON.parse(jsonText)
     const adminResult = json?.admRulBylSearch
     const licResult = json?.licBylSearch
-    if (adminResult?.admbyl) return { list: toArray(adminResult.admbyl), type: "admin" }
+    // 행정규칙 별표 항목 키는 admrulbyl (구버전/문서상 admbyl 표기도 방어적으로 허용)
+    const adminItems = adminResult?.admrulbyl ?? adminResult?.admbyl
+    if (adminItems) return { list: toArray(adminItems), type: "admin" }
     if (licResult?.ordinbyl) return { list: toArray(licResult.ordinbyl), type: "ordinance" }
     if (licResult?.licbyl) return { list: toArray(licResult.licbyl), type: "law" }
     return { list: [], type: "law" }
@@ -75,6 +77,8 @@ export async function getAnnexes(
     const parsedLawInput = parseLawNameAndHint(input.lawName)
     const normalizedLawName = parsedLawInput.normalizedLawName || input.lawName
     const annexSelector = (input.bylSeq || input.annexNo || parsedLawInput.annexNo || "").trim()
+    // 동일 번호(별표/별지/서식) 충돌 시 선택 우선순위 — 입력 힌트(별표6/서식6) > knd
+    const preferredAnnexType = parsedLawInput.annexType ?? annexTypeFromKnd(input.knd)
 
     // 행정규칙 ID(adminRuleId 또는 lawName 내 admrul:/순수 숫자)가 인식되면 admbyl 경로로 분기.
     // 법령 별표 경로는 그대로 유지 (adminRuleId 미인식 시 아래 기존 로직 100% 동일).
@@ -84,6 +88,7 @@ export async function getAnnexes(
         adminRuleId,
         normalizedLawName,
         annexSelector,
+        preferredType: preferredAnnexType,
         apiKey: input.apiKey,
         input,
       })
@@ -170,7 +175,7 @@ export async function getAnnexes(
 
     // 별표 선택값 지정 시 → 해당 별표 파일 다운로드 + 텍스트 추출
     if (annexSelector) {
-      return await extractAnnexContent(filtered, annexSelector, normalizedLawName)
+      return await extractAnnexContent(filtered, annexSelector, normalizedLawName, preferredAnnexType)
     }
 
     // 별표 선택값 미지정 → 기존 목록 반환
@@ -185,10 +190,11 @@ export async function getAnnexes(
 async function extractAnnexContent(
   annexList: AnnexItem[],
   annexSelector: string,
-  normalizedLawName: string
+  normalizedLawName: string,
+  preferredType?: AnnexKind
 ): Promise<{ content: Array<{ type: string, text: string }>, isError?: boolean }> {
   // bylSeq / annexNo / lawName 내 힌트로 유연 매칭
-  const matched = findMatchingAnnex(annexList, annexSelector)
+  const matched = findMatchingAnnex(annexList, annexSelector, preferredType)
   if (!matched) {
     const availableBylSeq = annexList.map((a) => a.별표번호).filter(Boolean).slice(0, 20).join(", ")
     return notFoundResponse(
@@ -325,11 +331,12 @@ async function extractAdminRuleAnnexes(
     adminRuleId: string
     normalizedLawName: string
     annexSelector: string
+    preferredType?: AnnexKind
     apiKey?: string
     input: GetAnnexesInput
   }
 ): Promise<{ content: Array<{ type: string, text: string }>, isError?: boolean }> {
-  const { adminRuleId, normalizedLawName, annexSelector, apiKey, input } = opts
+  const { adminRuleId, normalizedLawName, annexSelector, preferredType, apiKey, input } = opts
 
   // 1. 행정규칙명 확보: lawName이 실제 명칭이면 그대로, 아니면 ID로 본문 조회해 명칭 해석
   let ruleName = looksLikeRuleName(normalizedLawName) ? normalizedLawName : ""
@@ -382,7 +389,7 @@ async function extractAdminRuleAnnexes(
 
   // 6. 별표 선택값 지정 시 → 파일 다운로드 + 텍스트 추출, 미지정 시 목록
   if (annexSelector) {
-    return await extractAnnexContent(filtered, annexSelector, displayName)
+    return await extractAnnexContent(filtered, annexSelector, displayName, preferredType)
   }
   return formatAnnexList(filtered, "admin", input, displayName)
 }
@@ -457,7 +464,10 @@ function extractParentLawName(lawName: string): string | null {
   return cleaned !== lawName ? cleaned : null
 }
 
-function parseLawNameAndHint(lawName: string): { normalizedLawName: string, annexNo?: string } {
+/** 별표 종류 힌트 (별표 vs 서식) — 동일 번호 충돌 시 선택 우선순위에 사용 */
+type AnnexKind = "별표" | "서식"
+
+function parseLawNameAndHint(lawName: string): { normalizedLawName: string, annexNo?: string, annexType?: AnnexKind } {
   const trimmedLawName = lawName.trim()
   const annexHintMatch = trimmedLawName.match(/\[?\s*(별표|서식)\s*(?:제)?\s*(\d{1,6})\s*(?:호)?\s*\]?/)
 
@@ -473,15 +483,28 @@ function parseLawNameAndHint(lawName: string): { normalizedLawName: string, anne
 
   return {
     normalizedLawName: normalizedLawName || trimmedLawName,
-    annexNo: Number.isNaN(parsedAnnexNo) ? undefined : String(parsedAnnexNo)
+    annexNo: Number.isNaN(parsedAnnexNo) ? undefined : String(parsedAnnexNo),
+    annexType: annexHintMatch[1] as AnnexKind
   }
 }
 
-function findMatchingAnnex(annexList: AnnexItem[], annexSelector: string): AnnexItem | undefined {
+/** knd 코드(1/3=별표, 2/4=서식)에서 별표 종류 추론 */
+function annexTypeFromKnd(knd?: string): AnnexKind | undefined {
+  if (knd === "1" || knd === "3") return "별표"
+  if (knd === "2" || knd === "4") return "서식"
+  return undefined
+}
+
+/**
+ * 선택값에 맞는 별표 항목 반환.
+ * 행정규칙은 동일 별표번호가 별표/별지/서식에 병존(예: 별표 6 "내부회계관리제도 평가 및 보고 기준" vs
+ * 별지 6 "투명성보고서")하므로, 번호가 같은 후보가 여럿이면 종류 우선순위로 선택한다.
+ */
+function findMatchingAnnex(annexList: AnnexItem[], annexSelector: string, preferredType?: AnnexKind): AnnexItem | undefined {
   const selectorCandidates = buildSelectorCandidates(annexSelector)
   const selectorNumbers = extractSelectorNumbers(annexSelector)
 
-  return annexList.find((annex: AnnexItem) => {
+  const matches = annexList.filter((annex: AnnexItem) => {
     const annexNum = String(annex.별표번호 || "").trim()
     const annexTitle = String(annex.별표명 || "")
 
@@ -491,6 +514,18 @@ function findMatchingAnnex(annexList: AnnexItem[], annexSelector: string): Annex
 
     return selectorNumbers.some((num) => titleMatchesAnnexNumber(annexTitle, num))
   })
+
+  if (matches.length <= 1) return matches[0]
+
+  // 종류 우선순위: 요청 종류 일치 > 별표 > 서식 > 그 외(별지 등). 동순위는 원래 순서 유지.
+  const rank = (kind?: string): number => {
+    const s = String(kind || "")
+    if (preferredType && s.startsWith(preferredType)) return 0
+    if (s.startsWith("별표")) return 1
+    if (s.startsWith("서식")) return 2
+    return 3
+  }
+  return [...matches].sort((a, b) => rank(a.별표종류) - rank(b.별표종류))[0]
 }
 
 function buildSelectorCandidates(selector: string): Set<string> {
